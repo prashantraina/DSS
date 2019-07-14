@@ -36,6 +36,8 @@ class PinholeCamera(Camera):
             self.height = height
         if sv is not None:
             self.sv = sv
+        else:
+            self.sv = self.width / 2
         if focalLength is not None:
             self.focalLength = focalLength
 
