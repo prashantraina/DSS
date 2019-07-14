@@ -59,8 +59,6 @@ def _genSunLights(camForward: torch.tensor, mode="triColor") -> torch.Tensor:
     """
     generate rgb sun lights depending on camera position
     """
-
-    print('_genSunLights mode: ', str(mode))
     if mode == "triColor":
         # R around camera position
         rDir = normalize(camForward).cuda()
