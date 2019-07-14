@@ -63,14 +63,14 @@ if __name__ == "__main__":
             points[:, :3] -= center
             scene.loadPoints(points)
             splatter.setCloud(scene.cloud)
-            splatter.pointPosition.data.copy_(center)
+            splatter.pointTranslation.data.copy_(center)
             for i, cam in enumerate(scene.cameras):
                 # compute object rotation
                 cnt = 0
                 for ang in range(0, 360, 3):
                     rot = getRotationMatrix(torch.tensor(ang*np.pi/180).to(device=splatter.pointRotation.device))
                     splatter.pointRotation.data.copy_(rot.unsqueeze(0))
-                    splatter.m2w = batchAffineMatrix(splatter.pointRotation, splatter.pointPosition, splatter.pointScale)
+                    splatter.m2w = batchAffineMatrix(splatter.pointRotation, splatter.pointTranslation, splatter.pointScale)
 
                     # set camera to look at the center
                     splatter.setCamera(i)

@@ -16,7 +16,7 @@ modifiers = ["localPoints",
              "localNormals",
              "cameraPosition",
              "cameraRotation",
-             "pointPosition",
+             "pointTranslation",
              "pointRotation",
              "pointScale",
              "pointlightPositions",
@@ -59,6 +59,8 @@ def _genSunLights(camForward: torch.tensor, mode="triColor") -> torch.Tensor:
     """
     generate rgb sun lights depending on camera position
     """
+
+    print('_genSunLights mode: ', str(mode))
     if mode == "triColor":
         # R around camera position
         rDir = normalize(camForward).cuda()
@@ -162,18 +164,18 @@ class RasterizeAutograd(torch.autograd.Function):
             boundingBoxes  BxNx4
             inplane        BxNxhxwx3
         returns:
-            pixels         BxHxWx3
-            pointIdxMap    BxHxWx5
-            rhoMap         BxHxWx5
-            WsMap          BxHxWx5x3
-            isBehind       BxHxWx5
+            pixels         BxHxWxC
+            pointIdxMap    BxHxWxK
+            rhoMap         BxHxWxK
+            WsMap          BxHxWxKxC
+            isBehind       BxHxWxK
         """
         batchSize, numPoints, bbHeight, bbWidth = rho.shape
         # compute visiblity, return per pixel top5 contributor sorted by their
         # depthValue
-        # pointIdxMap BxHxWx5
-        # depthMap    BxHxWx5
-        # rhoMap      BxHxWx5
+        # pointIdxMap BxHxWxK
+        # depthMap    BxHxWxK
+        # rhoMap      BxHxWxK
         pointIdxMap = torch.full((batchSize, height, width, topK), -1, dtype=torch.int64, device=rho.device)
         depthMap = torch.full((batchSize, height, width, topK), camFar, dtype=rho.dtype, device=rho.device)
         bbPositionMap = torch.full((batchSize, height, width, topK, 2), -1, dtype=torch.int64, device=rho.device)
@@ -371,7 +373,7 @@ class DSS(torch.nn.Module):
             self.localPoints.data.set_(cloud.localPoints.unsqueeze(0))
             self.pointColors.data.set_(cloud.color.unsqueeze(0))
             self.localNormals.data.set_(cloud.localNormals.unsqueeze(0))
-            self.pointPosition.data.set_(cloud.position.unsqueeze(0))
+            self.pointTranslation.data.set_(cloud.position.unsqueeze(0))
             self.pointRotation.data.set_(cloud.rotation.unsqueeze(0))
             self.pointScale.data.set_(cloud.scale.unsqueeze(0))
             pShape = list(self.localPoints.shape)
@@ -382,17 +384,17 @@ class DSS(torch.nn.Module):
             self.cloudInitialized = True
             # Create model to world matrix (4x4)
             if not hasattr(self, "m2w") or self.m2w.requires_grad:
-                self.m2w = batchAffineMatrix(self.pointRotation, self.pointPosition, self.pointScale)
+                self.m2w = batchAffineMatrix(self.pointRotation, self.pointTranslation, self.pointScale)
             return
         self.localPoints = nn.Parameter(cloud.localPoints.unsqueeze(0), requires_grad=False)
         self.pointColors = nn.Parameter(cloud.color.unsqueeze(0), requires_grad=False)
         self.localNormals = nn.Parameter(cloud.localNormals.unsqueeze(0), requires_grad=False)
-        self.pointPosition = nn.Parameter(cloud.position.unsqueeze(0), requires_grad=False)
+        self.pointTranslation = nn.Parameter(cloud.position.unsqueeze(0), requires_grad=False)
         self.pointRotation = nn.Parameter(cloud.rotation.unsqueeze(0), requires_grad=False)
         self.pointScale = nn.Parameter(cloud.scale.unsqueeze(0), requires_grad=False)
         pShape = list(self.localPoints.shape)
         pShape[-1] = 1
-        self.m2w = batchAffineMatrix(self.pointRotation, self.pointPosition, self.pointScale)
+        self.m2w = batchAffineMatrix(self.pointRotation, self.pointTranslation, self.pointScale)
         self.nonvisibility.resize_(*pShape).zero_()
         self.renderTimes.resize_(*pShape).zero_()
         self.renderTimes = self.renderTimes.to(device=self.localPoints.device)
@@ -783,7 +785,7 @@ class DSS(torch.nn.Module):
             return shade
 
     def computeRho(self, projPoints, cameraPoints, cameraNormals, cutoffThreshold,
-                   Vrk, width, height, camFar, lowPassBandWidth):
+                   Vrk, imgWidth, imgHeight, camFar, lowPassBandWidth):
         """
             projPoints    BxNx2
             cameraPoints  BxNx3
@@ -837,39 +839,39 @@ class DSS(torch.nn.Module):
         boundingBoxes = _findSplatBoundingBox(
             cutoffThreshold,
             projPoints[:, :, 0:2],
-            width, height,
+            imgWidth, imgHeight,
             ellipseParams).detach()
-        width = torch.max(boundingBoxes[:, :, 2] - boundingBoxes[:, :, 0]).item()
-        height = torch.max(boundingBoxes[:, :, 3] - boundingBoxes[:, :, 1]).item()
+        bbWidth = torch.max(boundingBoxes[:, :, 2] - boundingBoxes[:, :, 0]).item()
+        bbHeight = torch.max(boundingBoxes[:, :, 3] - boundingBoxes[:, :, 1]).item()
 
-        # B x height x width
-        ygrid, xgrid = torch.meshgrid(torch.arange(height, dtype=projPoints.dtype, device=projPoints.device),
-                        torch.arange(width,  dtype=projPoints.dtype, device=projPoints.device))
+        # B x h x w
+        ygrid, xgrid = torch.meshgrid(torch.arange(bbHeight, dtype=projPoints.dtype, device=projPoints.device),
+                        torch.arange(bbWidth,  dtype=projPoints.dtype, device=projPoints.device))
         ygrid = ygrid.unsqueeze(0).expand(batchSize, -1, -1)
         xgrid = xgrid.unsqueeze(0).expand(batchSize, -1, -1)
         
-        # B x N x height x width x 2
+        # B x N x h x w x 2
         pixs = torch.stack([xgrid, ygrid], dim=-1).unsqueeze(1).expand(-1, PN, -1, -1, -1)
         pixs = pixs + boundingBoxes[:, :, :2].unsqueeze(2).unsqueeze(2).to(dtype=pixs.dtype)
 
         # grid of camera-plane coordinates relative to projected point (B, N, H, W, 2)
         pixs = pixs - projPoints[:, :, :2].unsqueeze(2).unsqueeze(2)
-        # B x N x H x W x 2 x 1
+        # B x N x h x w x 2 x 1
         pixs_ = pixs.unsqueeze(-1)
-        # (B x N x H x W x 1 x 2) @ BxN x 1 x 1 x 2 x 2 @ (N x H x W x 2 x 1) -> BxNxHxW
+        # (B x N x h x w x 1 x 2) @ BxN x 1 x 1 x 2 x 2 @ (N x h x w x 2 x 1) -> BxNxhxW
         betas = pixs_.transpose(-2, -1).matmul(Ms.unsqueeze(2).unsqueeze(2)).matmul(pixs_).squeeze(-1).squeeze(-1)
-        # BxN x H x W x 3
+        # BxN x h x w x 3
         inplane = pixs[:, :, :, :, 0].unsqueeze(-1) * x0plane.unsqueeze(2).unsqueeze(2) + pixs[:,:, :, :, 1].unsqueeze(-1) * x1plane.unsqueeze(2).unsqueeze(2) + \
             cameraPoints.unsqueeze(2).unsqueeze(2)[:, :, :, :3]
-        # B x N x H x W
+        # B x N x h x w
         depths = inplane[:, :, :, :, 2]
-        # B x N x H x W
+        # B x N x h x w
         Gbs = torch.exp(-betas)
         outofSupport = cutoffThreshold < betas
         Gbs = torch.where(outofSupport, torch.zeros_like(Gbs), Gbs)
         depths = torch.where(outofSupport, torch.full((1, 1, 1, 1), camFar, dtype=depths.dtype, device=depths.device), depths)
         inplane[:, :, :, :, 2] = depths
-        # BxN x H x W
+        # BxN x h x w
         rhos = Gas.unsqueeze(2).unsqueeze(2) * Gbs
         return rhos, Gas, boundingBoxes, inplane
 
@@ -925,7 +927,7 @@ class DSS(torch.nn.Module):
             PN = self.localPoints.size()[1]
         # Create model to world matrix (4x4)
         if self._need_to_compute("m2w"):
-            self.m2w = batchAffineMatrix(self.pointRotation, self.pointPosition, self.pointScale)
+            self.m2w = batchAffineMatrix(self.pointRotation, self.pointTranslation, self.pointScale)
         # depending on camera model, gives the right world-to-camera matrix
         if self._need_to_compute("w2c"):
             self.w2c = self.world2CameraMatrix(self.cameraRotation, self.cameraPosition)
@@ -965,9 +967,11 @@ class DSS(torch.nn.Module):
         if self.sunDirections is None or self.sunDirections.size()[0] == 0:
             self.cameraSuns = None
         else:
+            print(self.sunDirections.shape)
             self.cameraSuns = torch.matmul(self.sunDirections, self.w2c[:, :3, :3].cuda().transpose(1, 2))
             self.cameraSuns = normalize(self.cameraSuns, -1)
-            self.cameraSuns = torch.cat([self.cameraSuns, self.sunColors], dim=-1)
+            print(self.cameraSuns.shape, self.sunColors.shape)
+            self.cameraSuns = torch.cat([self.cameraSuns, self.sunColors.unsqueeze(0)], dim=-1)
 
     def updateLocalSize(self, decay):
         if self.backwardLocalSize is not None:
@@ -1031,14 +1035,14 @@ class Baseline(DSS):
         """
         super(Baseline, self).__init__(opt, scene)
         
-    def computeRho(self, projPoints, cameraPoints, width, height, camFar):
+    def computeRho(self, projPoints, cameraPoints, imgWidth, imgHeight, camFar):
         """
-            projPoints    BxNx2 (TODO:change to BxNx2)
+            projPoints    BxNx2
             cameraPoints  BxNx3
         return:
-            rho           NxbbHxbbW
-            boundingBoxes Nx4 xmin,ymin,xmax,ymax
-            depthMap      NxbbHxbbWx3
+            rho           BxNxbbHxbbW
+            boundingBoxes BxNx4 xmin,ymin,xmax,ymax
+            depthMap      BxNxbbHxbbWx3
         """
         batchSize, PN, _ = projPoints.shape
         sigma = 3
@@ -1047,17 +1051,17 @@ class Baseline(DSS):
         # B,N,4
         boundingBoxes = torch.stack([torch.clamp(torch.floor(projPoints[:,:, 0]-radius).long(),min=0), 
                                      torch.clamp(torch.floor(projPoints[:, :,1]-radius).long(),min=0),
-                                     torch.clamp(torch.ceil(projPoints[:, :,0]+radius).long(), max=width), 
-                                     torch.clamp(torch.ceil(projPoints[:, :,1]+radius).long(), max=height)], dim=-1)
+                                     torch.clamp(torch.ceil(projPoints[:, :,0]+radius).long(), max=imgWidth), 
+                                     torch.clamp(torch.ceil(projPoints[:, :,1]+radius).long(), max=imgHeight)], dim=-1)
         
-        width = (boundingBoxes[:,:,2]-boundingBoxes[:,:,0]).max().item()
-        height = (boundingBoxes[:,:,3]-boundingBoxes[:,:,1]).max().item()
-        ygrid, xgrid = torch.meshgrid(torch.arange(height, dtype=projPoints.dtype, device=projPoints.device),
-                        torch.arange(width,  dtype=projPoints.dtype, device=projPoints.device))
+        bbWidth = (boundingBoxes[:,:,2]-boundingBoxes[:,:,0]).max().item()
+        bbHeight = (boundingBoxes[:,:,3]-boundingBoxes[:,:,1]).max().item()
+        ygrid, xgrid = torch.meshgrid(torch.arange(bbHeight, dtype=projPoints.dtype, device=projPoints.device),
+                        torch.arange(bbWidth,  dtype=projPoints.dtype, device=projPoints.device))
         ygrid = ygrid.unsqueeze(0).expand(batchSize, -1, -1)
         xgrid = xgrid.unsqueeze(0).expand(batchSize, -1, -1)
         
-        # B x N x height x width x 2
+        # B x N x bbHeight x bbWidth x 2
         pixs = torch.stack([xgrid, ygrid], dim=-1).unsqueeze(1).expand(-1, PN, -1, -1, -1)
         pixs = pixs + boundingBoxes[:, :, :2].unsqueeze(2).unsqueeze(2).to(dtype=pixs.dtype)
 
@@ -1122,25 +1126,33 @@ class GatherMaps(torch.autograd.Function):
     
     @staticmethod
     def backward(ctx, grad):
+        # shape of grad = shape of output = B x imgH x imgW x topK x C
         indiceMap, = ctx.saved_tensors
+        # shape of dIn = shape of original values = B x N x C
         dIn = rasterize_forward.scatter_maps(ctx.numPoint, grad, indiceMap)
-        return dIn, None, None
+        return dIn, None, None # (no gradient propagated for indiceMap & defaultValue)
 
 gather_maps = GatherMaps.apply
 def baseline_rasterize(rho, Ws, projPoints, boundingBoxes, inplane,
-                       width, height, camFar, localWidth, localHeight, mergeThreshold, topK):
+                       imgWidth, imgHeight, camFar, localWidth, localHeight, mergeThreshold, topK):
         batchSize, numPoints, bbHeight, bbWidth = rho.shape
-        pointIdxMap = torch.full((batchSize, height, width, topK), -1, dtype=torch.int64, device=rho.device)
-        depthMap = torch.full((batchSize, height, width, topK), camFar, dtype=rho.dtype, device=rho.device)
-        bbPositionMap = torch.full((batchSize, height, width, topK, 2), -1, dtype=torch.int64, device=rho.device)
+        pointIdxMap = torch.full((batchSize, imgHeight, imgWidth, topK), -1, dtype=torch.int64, device=rho.device)
+        depthMap = torch.full((batchSize, imgHeight, imgWidth, topK), camFar, dtype=rho.dtype, device=rho.device)
+        bbPositionMap = torch.full((batchSize, imgHeight, imgWidth, topK, 2), -1, dtype=torch.int64, device=rho.device)
         rasterize_forward.compute_visibility_maps(boundingBoxes[:, :, :2].contiguous(), inplane, pointIdxMap, bbPositionMap, depthMap)
         # gather rho, wk
+        # Ws: B x N x (RGB)
+        # WsMap : B x imgH x imgW x topK x (RGB)
         WsMap = gather_maps(Ws, pointIdxMap, 0.0)
         # per batch indice for rhos bx(Nxhxw)
         # gather rho, Ws values from pointIdxMap and bbPositionMap, if idx < 0 (unset), then set rho=0 Ws=0
-        totalIdxMap = pointIdxMap*bbHeight*bbWidth+bbPositionMap[:, :, :, :, 0]*bbWidth+bbPositionMap[:, :, :, :, 1]
+        totalIdxMap = pointIdxMap*bbHeight*bbWidth + bbPositionMap[:, :, :, :, 0]*bbWidth + bbPositionMap[:, :, :, :, 1]
         validMaps = totalIdxMap >= 0
         totalIdxMap = torch.where(validMaps, totalIdxMap, torch.full_like(totalIdxMap, -1))
+        # totalIdxMap : B x imgH x imgW x topK
+        # rho : B x N x bbH x bbW
+        # rho.reshape : B x (N x bbH x bbW) x 1
+        # rhoMap : B x imgH x imgW x topK [x 1] (same as depthMap)
         rhoMap = gather_maps(rho.reshape(batchSize, -1, 1), totalIdxMap, 0.0).squeeze(-1)
         # check depth jump
         isBehind = torch.zeros(depthMap.shape, dtype=torch.uint8, device=depthMap.device)
@@ -1148,7 +1160,12 @@ def baseline_rasterize(rho, Ws, projPoints, boundingBoxes, inplane,
         rhoMap_filtered = torch.where(isBehind, torch.zeros(1, 1, 1, 1, device=rhoMap.device, dtype=rhoMap.dtype), rhoMap)
         # WsMap[:, :, :, 1:, :] = torch.where(isBehind.unsqueeze(-1), torch.zeros(1, 1, 1, 1, 1, device=WsMap.device, dtype=WsMap.dtype), WsMap[:, :, :, 1:])
         # normalize rho
-        sumRho = torch.sum(rhoMap_filtered, dim=-1, keepdim=True)
+        sumRho = torch.sum(rhoMap_filtered, dim=-1, keepdim=True) # dim -1 is dim 3
         rhoMap_normalized = rhoMap_filtered/(sumRho+1e-10)
         pixels = torch.sum(WsMap * rhoMap_normalized.unsqueeze(-1), dim=3)
+        # pixels : B x imgH x imgW x (RGB)
+        # pointIdxMap : B x imgH x imgW x topK
+        # rhoMap_normalized : B x imgH x imgW x topK
+        # WsMap : B x imgH x imgW x topK x (RGB)
+        # isBehind : B x imgH x imgW x topK
         return pixels, pointIdxMap, rhoMap_normalized, WsMap, isBehind

@@ -46,69 +46,71 @@ __device__ void after_removal(const int numColors, const int topK,
                               scalar_t *newColors,          // numColors
                               scalar_t *newDepth) {
   // initialize color with 0.0
-  for (size_t c = 0; c < numColors; c++) {
+  for (int c = 0; c < numColors; c++) 
     newColors[c] = 0.0;
-  }
+  
   // initialize depth with the farthest so far
   *newDepth = depthList[topK - 1];
 
   scalar_t sumRho = 0.0;
   int numVisible = 0;
-  for (size_t k = 0; k < topK; k++) {
+  for (int k = 0; k < topK; k++) {
     if (curIsBehind[k] == 0)
       ++numVisible;
   }
   // if it's the only visible point, then removing it will reveal the
   // color below
   assert(numVisible >= 0);
-  if (numVisible == 1) {
+  if (numVisible == 1) 
+  {
     sumRho = 0.0;
     // CHECK: should be the second?
-    scalar_t curDepth = depthList[1];
+    const scalar_t curDepth = depthList[1];
+    
+    for(int k = curK + 1; k < topK; k++) 
     {
-      size_t k = curK + 1;
-      while (k < topK) {
-        // as soon as idxList is -1 or depth > currentDepth+threshold
-        // stop accumulating colors
-        if (curPointList[k] == -1) {
-          break;
-        }
-        if ((depthList[k] - curDepth) > depthThres) {
-          break;
-        }
-        for (size_t c = 0; c < numColors; c++) {
-          newColors[c] += wsList[k * numColors + c] * rhoList[k];
-        }
-        sumRho += rhoList[k];
-        if (depthList[k] < *newDepth) {
-          *newDepth = depthList[k];
-        }
-        ++k;
-      }
+      // as soon as idxList is -1 or depth > currentDepth+threshold
+      // stop accumulating colors
+      if (curPointList[k] == -1) 
+        break;
+
+      if ((depthList[k] - curDepth) > depthThres) 
+        break;
+        
+      for (int c = 0; c < numColors; c++) 
+        newColors[c] += wsList[k * numColors + c] * rhoList[k];
+      
+      sumRho += rhoList[k];
+
+      if (depthList[k] < *newDepth) 
+        *newDepth = depthList[k];
     }
-    for (size_t c = 0; c < numColors; c++) {
+
+    for (int c = 0; c < numColors; c++) 
       newColors[c] /= (sumRho + 1e-8);
-    }
+
     return;
   }
 
   // not the only point visible:
   // removing current point involves reweighting rhos
-  for (size_t k = 0; k < numVisible; k++) {
-    if (k == curK) {
+  for (size_t k = 0; k < numVisible; k++) 
+  {
+    if (k == curK) 
       continue;
-    }
-    for (size_t c = 0; c < numColors; c++) {
+      
+    for (size_t c = 0; c < numColors; c++) 
       newColors[c] += wsList[k * numColors + c] * rhoList[k];
-    }
+      
     sumRho += rhoList[k];
-    if (depthList[k] < *newDepth) {
+
+    if (depthList[k] < *newDepth) 
       *newDepth = depthList[k];
-    }
   }
-  for (size_t c = 0; c < numColors; c++) {
+
+  for (size_t c = 0; c < numColors; c++) 
     newColors[c] /= (sumRho + 1e-8);
-  }
+    
   assert(sumRho > 0);
   return;
 }
@@ -128,8 +130,7 @@ after_addition(const int numColors, const int topK, const scalar_t rho,
   scalar_t sumRho = rho;
   for (size_t k = 0; k < topK; k++) {
     if (curIsBehind[k] > 0 ||
-        (depthList[k] - depthThres) >
-            pointDepth) { // || (depthList[k] - depthThres) > pointDepth
+        (depthList[k] - depthThres) > pointDepth) { // || (depthList[k] - depthThres) > pointDepth
       break;
     }
     sumRho += rhoList[k];
@@ -139,9 +140,8 @@ after_addition(const int numColors, const int topK, const scalar_t rho,
     sumRho += 1e-5;
   }
 
-  for (size_t c = 0; c < numColors; c++) {
+  for (size_t c = 0; c < numColors; c++) 
     newColors[c] = rho / sumRho * ws[c];
-  }
 
   for (size_t k = 0; k < topK; k++) {
     for (size_t c = 0; c < numColors; c++) {
@@ -271,16 +271,16 @@ __global__ void visibility_backward_kernel(
     const int localHeight, const int localWidth, const int topK, const int PN,
     const int projDim, const int WDim, const scalar_t focalL,
     const scalar_t mergeT, const bool considerZ,
-    const scalar_t *__restrict__ colorGrads,    // BxHxWx3 gradient from output
+    const scalar_t *__restrict__ colorGrads,    // BxHxWxC gradient from output
     const indice_t *__restrict__ pointIdxMap,   // BxHxWxtopK
     const scalar_t *__restrict__ rhoMap,        // BxHxWxtopK
-    const scalar_t *__restrict__ wsMap,         // BxHxWxtopKx3
+    const scalar_t *__restrict__ wsMap,         // BxHxWxtopKxC
     const scalar_t *__restrict__ depthMap,      // BxHxWxtopK
     const uint8_t *__restrict__ isBehind,       // BxHxWxtopK
-    const scalar_t *__restrict__ pixelValues,   // BxHxWx3
+    const scalar_t *__restrict__ pixelValues,   // BxHxWxC
     const indice_t *__restrict__ boundingBoxes, // BxNx4 xmin ymin xmax ymax
     const scalar_t *__restrict__ projPoints,    // BxNx[2or3], xy1
-    const scalar_t *__restrict__ pointColors,   // BxNx3
+    const scalar_t *__restrict__ pointColors,   // BxNxC
     const scalar_t *__restrict__ depthValues,   // BxNx1
     const scalar_t *__restrict__ rhoValues,     // BxNx1
     scalar_t *__restrict__ dIdp, // BxNx2 gradients for screenX and screenY
@@ -339,21 +339,25 @@ __global__ void visibility_backward_kernel(
           scalar_t newDepth;
 
           // outside
-          if (curK < 0) {
+          if (curK < 0) 
+          {
             after_addition(WDim, topK, rhov, curPointColor, curPointDepth,
                            mergeT, curDepthList, curIsBehind, curWs, curRhos,
                            curPixelValues, newColors, &newDepth);
-            for (size_t c = 0; c < WDim; c++) {
+
+            for (size_t c = 0; c < WDim; c++) 
               dldI += (newColors[c] - curPixelValues[c]) * curColorGrad[c];
-            }
-            if (dldI < 0.0) {
+              
+            if (dldI < 0.0) 
+            {
               // another point at pixel i,j is in front of the current point by
               // a threshold, need to change z, otherwise moving to that
               // direction won't change the color value
-              if (curPointDepth - newDepth > mergeT) {
-                if (!considerZ) {
+              if (curPointDepth - newDepth > mergeT) 
+              {
+                if (!considerZ) 
                   continue;
-                }
+                  
                 scalar_t dx = (scalar_t(j) - curProjValues[0]);
                 scalar_t dy = (scalar_t(i) - curProjValues[1]);
                 scalar_t dx_3d = (scalar_t(j) - curProjValues[0]) / focalL /
@@ -371,8 +375,9 @@ __global__ void visibility_backward_kernel(
                 didyv = dldI / distance2 * dy;
                 assert(!isnan(didxv));
                 assert(!isnan(didyv));
-              } // don't need to change z
-              else {
+              } 
+              else // don't need to change z
+              {
                 scalar_t dx = (scalar_t(j) - curProjValues[0]);
                 scalar_t dy = (scalar_t(i) - curProjValues[1]);
                 scalar_t distance2 = eps_guard(dx * dx + dy * dy);
@@ -386,18 +391,21 @@ __global__ void visibility_backward_kernel(
             }
           }
           // pixel inside splat
-          else {
+          else // i.e. curK >= 0
+          {
             // is the current point shown?
-            if (curIsBehind[curK] < 1) {
+            if (curIsBehind[curK] < 1) // yes
+            {
               // dIdx dIdy and dIdz-
               after_removal(WDim, topK, curK, mergeT, curDepthList, curIdxList,
                             curIsBehind, curWs, curRhos, curPixelValues,
                             newColors, &newDepth);
-              for (size_t c = 0; c < WDim; c++) {
-                dldI += (newColors[c] - curPixelValues[c]) * curColorGrad[c];
-              }
 
-              if (dldI < 0) {
+              for (size_t c = 0; c < WDim; c++) 
+                dldI += (newColors[c] - curPixelValues[c]) * curColorGrad[c];
+
+              if (dldI < 0.0) 
+              {
                 // dIdp = (dIdp+) + (dIdp-)
                 scalar_t dx = (scalar_t(j) - curProjValues[0]);
                 scalar_t dy = (scalar_t(i) - curProjValues[1]);
@@ -416,7 +424,8 @@ __global__ void visibility_backward_kernel(
               }
             } // endif (curRhos[curK] > 0)
             // point is not visible:
-            else {
+            else // i.e. curIsBehind[curK] >= 1
+            {
               if (!considerZ)
                 continue;
               // this point is occluded by other points, moving closer will

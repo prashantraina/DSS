@@ -57,19 +57,20 @@ scatter_maps_kernel(int batchSize, int numPoint, int imgWidth, int imgHeight,
   // const int numPixels = imgWidth * imgHeight;
   // loop all points
   for (int b = blockIdx.x; b < batchSize; b += gridDim.x) {
-    for (indice_t p = threadIdx.x + blockIdx.y * blockDim.x; p < numPoint;
-         p += blockDim.x * gridDim.y) {
+    for (indice_t pt = threadIdx.x + blockIdx.y * blockDim.x; pt < numPoint;
+         pt += blockDim.x * gridDim.y) {
       // loop over all pixels
-      for (int i = 0; i < imgHeight; i++) {
-        for (int j = 0; j < imgWidth; j++) {
-          int pixID = b * imgWidth * imgHeight + i * imgWidth + j;
-          const indice_t *iOffset = indices + pixID * topK;
+      for (int h = 0; h < imgHeight; h++) {
+        for (int w = 0; w < imgWidth; w++) {
+          int pixID = b * imgWidth * imgHeight + h * imgWidth + w;
+          int currPixelOffset  = pixID * topK;
+          const indice_t *indicesPtr = indices + currPixelOffset;
           for (int k = 0; k < topK; k++) {
-            indice_t pid = iOffset[k];
-            if (pid == p) {
+            indice_t pid = indicesPtr[k];
+            if (pid == pt) {
               for (int c = 0; c < C; c++) {
                 dataGrad[(b * numPoint + pid) * C + c] +=
-                    outGrad[(pixID * topK + k) * C + c];
+                    outGrad[(currPixelOffset + k) * C + c];
               }
             }
           }
@@ -101,12 +102,12 @@ guided_scatter_maps_kernel(int batchSize, int numPoint, int imgWidth,
       indice_t ymax = min(indice_t(boundingBoxes[curPointIdx * 4 + 3]),
                           indice_t(imgHeight));
       // loop over all pixels
-      for (indice_t i = ymin; i < ymax; i++) {
-        for (indice_t j = xmin; j < xmax; j++) {
-          indice_t pixID = b * imgWidth * imgHeight + i * imgWidth + j;
-          const indice_t *iOffset = indices + pixID * topK;
+      for (indice_t h = ymin; h < ymax; h++) {
+        for (indice_t w = xmin; w < xmax; w++) {
+          indice_t pixID = b * imgWidth * imgHeight + h * imgWidth + w;
+          const indice_t *indicesPtr = indices + pixID * topK;
           for (indice_t k = 0; k < topK; k++) {
-            indice_t pid = iOffset[k];
+            indice_t pid = indicesPtr[k];
             if (pid == p) {
               for (indice_t c = 0; c < C; c++) {
                 dataGrad[(b * numPoint + pid) * C + c] +=
@@ -238,7 +239,7 @@ void compute_visiblity_maps_cuda(const at::Tensor &boundingBoxes,
   return;
 }
 
-// data BxNxC, indices BxHxWxK value (0~N-1), output BxHxKxC
+// data BxNxC, indices BxHxWxK value (0~N-1), output BxHxWxKxC
 at::Tensor gather_maps_cuda(const at::Tensor &data, const at::Tensor &indices,
                             const double defaultValue) {
   const int batchSize = data.size(0);
@@ -276,7 +277,7 @@ at::Tensor gather_maps_cuda(const at::Tensor &data, const at::Tensor &indices,
 }
 
 // the inverse of gather_maps
-// src BxHxWxKxC, indices BxHxWxK value (0~N-1), output BxHxC
+// src BxHxWxKxC, indices BxHxWxK value (0~N-1), output BxNxC
 at::Tensor scatter_maps_cuda(const int64_t numPoint, const at::Tensor &src,
                              const at::Tensor &indices) {
   const int batchSize = indices.size(0);

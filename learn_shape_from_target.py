@@ -70,8 +70,8 @@ if __name__ == "__main__":
     np.random.seed(24)
 
     # load scenes
-    refScene = readScene(opt.ref, device="cpu")
-    scene = readScene(opt.source, device="cpu")
+    refScene = readScene(opt.ref, device=torch.device("cpu"))
+    scene = readScene(opt.source, device=torch.device("cpu"))
     if opt.baseline:
         refScene.cloud.shading = scene.cloud.shading = "depth"
 
